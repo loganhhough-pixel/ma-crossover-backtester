@@ -12,7 +12,7 @@ train.columns = train.columns.droplevel(1)
 test = yf.download("SPY", start="2021-01-01", end="2024-01-01", auto_adjust=True)
 test.columns = test.columns.droplevel(1)
 
-def run_backtest(data, short_window, long_window):
+def run_backtest(data, short_window, long_window, position_size=1.0):
     data["MA_short"] = data["Close"].rolling(short_window).mean()
     data["MA_long"] = data["Close"].rolling(long_window).mean()
 
@@ -31,7 +31,7 @@ def run_backtest(data, short_window, long_window):
         long_ma = data["MA_long"].iloc[i]
 
         if short_ma > long_ma and shares == 0:
-            shares = cash/(price_today * (1 + transaction_cost_rate))
+            shares = (cash * position_size)/(price_today * (1 + transaction_cost_rate))
             cost = price_today * shares
             fee = cost * transaction_cost_rate
             total_fees += fee
@@ -42,67 +42,50 @@ def run_backtest(data, short_window, long_window):
             gross = price_today * shares
             fee = gross * transaction_cost_rate
             total_fees += fee
-            cash = gross - fee
+            cash += gross - fee
             shares = 0
             trade_counter += 1
 
         account_worth.append(cash+shares*price_today)
-    return account_worth[-1]
 
-print(run_backtest(test, 15, 70))
-print(run_backtest(test, 20, 50))
+    portfolio = pd.Series(account_worth, index=data.index)
+    daily_returns = portfolio.pct_change()
+    mean = daily_returns.mean()
+    std = daily_returns.std()
+    sharpe = (mean/std) * np.sqrt(252)
 
-first_price = test["Close"].iloc[0]
-last_price = test["Close"].iloc[-1]
-hold_shares = 10000/first_price
-hold_value = hold_shares * last_price
-print(hold_value)
+    running_max = portfolio.cummax()
+    drawdown = (portfolio - running_max) / running_max
+    max_drawdown = drawdown.min()
 
-# for short in range(10, 51, 5):
-#     for long in range(50, 201, 10):
-#         result = run_backtest(train, short, long)
-#         print(short, long, result)
+    return account_worth[-1], sharpe, max_drawdown, trade_counter, total_fees, portfolio
 
-# portfolio = pd.Series(account_worth, index=data.index)
-# daily_returns = portfolio.pct_change()
+tickers = ["SPY", "QQQ", "AAPL", "MSFT", "GLD"]
 
-# mean = daily_returns.mean()
-# std = daily_returns.std()
+for ticker in tickers:
+    prices = yf.download(ticker, start="2015-01-01", end="2024-01-01", auto_adjust=True)
+    prices.columns = prices.columns.droplevel(1)
+    
+    value, sharpe, dd, trades, fees, portfolio = run_backtest(prices, 20, 50)
+    
+    hold = (10000 / prices["Close"].iloc[0]) * prices["Close"].iloc[-1]
+    
+    print(f"{ticker}:  strategy ${value:,.0f}  hold ${hold:,.0f}  Sharpe {sharpe:.2f}  DD {dd:.1%}  {trades} trades")
 
-# sharpe = (mean/std) * np.sqrt(252)
+for size in [1.0, 0.75, 0.5, 0.25]:
+    value, sharpe, dd, trades, fees, portfolio = run_backtest(data, 20, 50, size)
+    print(f"Size {size}:  ${value:,.0f}  Sharpe {sharpe:.2f}  DD {dd:.1%}")
 
-# first_price = data["Close"].iloc[0]
-# last_price = data["Close"].iloc[-1]
-# hold_shares = 10000/first_price
-# hold_value = hold_shares * last_price
-# hold_worth = hold_shares * data["Close"]
+value, sharpe, dd, trades, fees, portfolio = run_backtest(data, 20, 50)
+hold_worth = (10000 / data["Close"].iloc[0]) * data["Close"]
 
-# hold_returns = hold_worth.pct_change()
-# hold_mean = hold_returns.mean()
-# hold_std = hold_returns.std()
-# hold_sharpe = (hold_mean/hold_std) * np.sqrt(252)
-
-# running_max = portfolio.cummax()
-# drawdown = (portfolio - running_max) / running_max
-# max_drawdown = drawdown.min()
-
-# hold_running_max = hold_worth.cummax()
-# hold_drawdown = (hold_worth - hold_running_max) / hold_running_max
-# hold_max_drawdown = hold_drawdown.min()
-
-# print(f"Strategy:    ${account_worth[-1]:,.2f}")
-# print(f"Buy & hold:  ${hold_value:,.2f}")
-# print(f"Trades:      {trade_counter}")
-# print(f"Total fees:  ${total_fees:,.2f}")
-# print(f"Sharpe:      {sharpe:.2f}")
-# print(f"Hold Sharpe:    {hold_sharpe:.2f}")
-# print(f"Max DD:      {max_drawdown:.1%}")
-# print(f"Hold Max DD: {hold_max_drawdown:.1%}")
-
-# plt.plot(portfolio, label="Strategy")
-# plt.plot(hold_worth, label="Buy & Hold")
-# plt.title("MA Crossover vs Buy & Hold — SPY 2015-2024")
-# plt.xlabel("Time")
-# plt.ylabel("Account Value ($)")
-# plt.legend()
-# plt.show()
+plt.figure(figsize=(12, 6))
+plt.plot(portfolio, label="MA Crossover (20/50)")
+plt.plot(hold_worth, label="Buy & Hold")
+plt.title("MA Crossover vs Buy & Hold — SPY 2015-2024")
+plt.xlabel("Date")
+plt.ylabel("Account Value ($)")
+plt.legend()
+plt.grid(alpha=0.3)
+plt.savefig("equity_curve.png", dpi=150, bbox_inches="tight")
+plt.show()
